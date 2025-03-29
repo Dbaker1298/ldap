@@ -1,0 +1,31 @@
+---
+- name: Deploy a server on Vultr
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Create a Vultr instance
+      vultr.cloud.instance:
+        api_key: "{{ vultr_api_key }}"
+        region: "ewr"  # Replace with your desired region (e.g., New Jersey)
+        plan: "vc2-1c-1gb"  # Replace with your desired plan
+        os_id: 387  # Replace with your desired OS ID (e.g., Ubuntu 20.04)
+        label: "MyVultrServer"
+      register: vultr_instance
+
+    - name: Wait for the instance to be ready
+      pause:
+        seconds: 60
+
+    - name: Add the new instance to the inventory
+      add_host:
+        name: "{{ vultr_instance.instance.main_ip }}"
+        groups: vultr_servers
+
+- name: Configure the Vultr server
+  hosts: vultr_servers
+  become: yes
+  tasks:
+    - name: Install updates
+      apt:
+        update_cache: yes
+        upgrade: dist

@@ -1,0 +1,184 @@
+---
+# Play 1: Provision the Vultr Server using Vultr API
+- name: Provision Vultr Ubuntu Server
+  hosts: localhost
+  connection: local
+  gather_facts: false # Not needed for API interaction
+
+  vars:
+    # --- Vultr API & Server Configuration ---
+    # ** SECURITY WARNING: Store your API key securely! **
+    vultr_api_key: "{{ lookup('env', 'VULTR_API_KEY') }}"
+
+    server_label: "my-ubuntu-ldapserver-{{ '%Y%m%d%H%M%S' | strftime }}" # Unique label
+    server_hostname: "ldapserver.still-learning.tech" # Optional: sets the server hostname
+    vultr_region: "ewr" # Example: Newark. Find IDs via Vultr docs/API/CLI
+    vultr_plan: "vc2-2c-2gb" # Example: 1 CPU, 1GB RAM. Find IDs via Vultr docs/API/CLI
+    vultr_os_name: "Ubuntu 24.10 x64" # Use the OS name as shown in Vultr UI/API
+    # Name of the SSH key *already added* to your Vultr account
+    vultr_ssh_key_name: "Fedora personal"
+    # Optional: Assign Firewall Group ID (must exist in Vultr)
+    # vultr_firewall_group_id: "your_firewall_group_id"
+    # Optional: Assign Tags
+    # vultr_tags:
+    #   - webserver
+    #   - production
+
+    # --- SSH Configuration for Ansible ---
+    # Path to the *private* key corresponding to the public key added to Vultr
+    # ** SECURITY WARNING: Secure this path if needed (e.g., Vault) **
+    ssh_private_key_file: "~/.ssh/id_ed25519" # Adjust path as needed
+    new_server_user: "root" # Initial connection usually as root for Vultr Ubuntu
+
+  tasks:
+    - name: Fail if Vultr API Key is not set
+      ansible.builtin.fail:
+        msg: "Vultr API Key is not defined. Set the VULTR_API_KEY environment variable or define 'vultr_api_key' in vars."
+      when: vultr_api_key is not defined or vultr_api_key == ""
+
+    - name: Find the OS ID for '{{ vultr_os_name }}'
+      vultr.cloud.os_info:
+        api_key: "{{ vultr_api_key }}"
+      register: os_info_result
+      delegate_to: localhost # Ensure this runs locally
+      # Note: The 'vultr.cloud.os_info' module fetches all OS info, including IDs.
+      # You can filter the results based on the OS name you want to use.
+
+    - name: Set OS ID fact
+      ansible.builtin.set_fact:
+        vultr_os_id: "{{ (os_info_result.vultr_os_info | selectattr('name', 'equalto', vultr_os_name) | list | first).id }}"
+      when: os_info_result is defined and os_info_result.vultr_os_info is defined
+
+    - name: Fail if OS ID could not be found
+      ansible.builtin.fail:
+        msg: "Could not find OS ID for '{{ vultr_os_name }}'. Check the name or if it's available in region '{{ vultr_region }}'."
+      when: vultr_os_id is not defined
+
+    - name: Find the SSH Key ID for '{{ vultr_ssh_key_name }}'
+      vultr.cloud.ssh_key_info:
+        api_key: "{{ vultr_api_key }}"
+      register: ssh_key_info_result
+      delegate_to: localhost
+
+    - name: Set SSH Key ID fact
+      ansible.builtin.set_fact:
+        vultr_sshkey_id: "{{ (ssh_key_info_result.vultr_ssh_key_info | selectattr('name', 'equalto', vultr_ssh_key_name) | list | first).id }}"
+      when: ssh_key_info_result is defined and ssh_key_info_result.vultr_ssh_key_info is defined
+
+    - name: Fail if SSH Key ID could not be found
+      ansible.builtin.fail:
+        msg: "Could not find SSH Key ID for '{{ vultr_ssh_key_name }}'. Ensure it exists in your Vultr account."
+      when: vultr_sshkey_id is not defined
+
+    - name: Create Vultr Server Instance
+      vultr.cloud.server:
+        api_key: "{{ vultr_api_key }}"
+        label: "{{ server_label }}"
+        hostname: "{{ server_hostname | default(omit) }}" # Only set if defined
+        region: "{{ vultr_region }}"
+        plan: "{{ vultr_plan }}"
+        os_id: "{{ vultr_os_id }}"
+        sshkey_id:
+          - "{{ vultr_sshkey_id }}" # Must be a list
+        # firewall_group_id: "{{ vultr_firewall_group_id | default(omit) }}" # Only set if defined
+        # tags: "{{ vultr_tags | default(omit) }}" # Only set if defined
+        state: present # Ensure the server exists
+      register: vultr_server_info
+
+    - name: Show Server Info (including IP)
+      ansible.builtin.debug:
+        var: vultr_server_info.server
+
+    # --- Dynamic Inventory ---
+    - name: Add new server IP to inventory group 'vultr_servers'
+      ansible.builtin.add_host:
+        name: "{{ vultr_server_info.server.main_ip }}"
+        groups: vultr_servers
+        ansible_user: "{{ new_server_user }}"
+        ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
+      when: vultr_server_info.server.main_ip is defined
+
+    - name: Wait for SSH to become available on the new server
+      ansible.builtin.wait_for:
+        host: "{{ vultr_server_info.server.main_ip }}"
+        port: 22
+        delay: 15          # Initial delay before first check
+        timeout: 300       # Max seconds to wait
+        state: started     # Wait until port is open
+      when: vultr_server_info.server.main_ip is defined
+
+# Play 2: Configure the newly created server
+- name: Configure New Vultr Ubuntu Server
+  hosts: vultr_servers # Target the dynamic group created above
+  become: true         # Most config tasks need sudo/root
+  gather_facts: true   # Gather facts from the remote server
+
+  # Optional: Define variables specific to this play/host group
+  vars:
+    admin_user: "david"
+
+  tasks:
+    - name: Update APT package cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600 # Only update if cache is older than 1 hour
+      changed_when: false # Don't report change for cache update
+
+    - name: Upgrade all APT packages
+      ansible.builtin.apt:
+        upgrade: dist # Upgrade everything, handling dependencies
+
+    - name: Install common packages (optional)
+      ansible.builtin.apt:
+        name:
+          - vim
+          - git
+          - curl
+          - ufw # Uncomplicated Firewall
+          - fail2ban
+        state: present
+
+    # --- Optional: Create a non-root admin user ---
+    - name: Create an admin user
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        state: present
+        shell: /bin/bash
+        groups: sudo # Add user to sudo group
+        append: yes
+        create_home: yes
+
+    - name: Set up authorized keys for the admin user
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        state: present
+        key: "{{ lookup('file', ssh_private_key_file + '.pub') }}" # Assumes pub key is next to private key
+
+    # --- Optional: Basic UFW Firewall Setup ---
+    - name: Allow SSH through UFW
+      community.general.ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Allow HTTP through UFW (if needed)
+      community.general.ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Allow HTTPS through UFW (if needed)
+      community.general.ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+
+    - name: Deny all other incoming traffic by default
+      community.general.ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    - name: Server Configuration Complete Message
+      ansible.builtin.debug:
+        msg: "Basic configuration applied to {{ inventory_hostname }}"
