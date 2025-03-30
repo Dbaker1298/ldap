@@ -30,9 +30,6 @@
     ssh_private_key_file: "~/.ssh/id_ed25519" # Adjust path as needed
     new_server_user: "root" # Initial connection usually as root for Vultr Ubuntu
 
-    # --- Optional: Create a non-root admin user ---
-    admin_user: "david" # Name of the admin user to create
-
   tasks:
     - name: Fail if Vultr API Key is not set
       ansible.builtin.fail:
@@ -72,12 +69,12 @@
         # tags: "{{ vultr_tags | default(omit) }}" # Only set if defined
         state: present # Ensure the server exists
       when: instance_id is undefined # Only create if not already defined
-    
+
     - name: Get Vultr instance info of the single host
       vultr.cloud.instance_info:
         label: "{{ server_label }}"
       register: results
-    
+
     - name: Print Vultr instance info
       ansible.builtin.debug:
         var: (results.vultr_instance_info | selectattr('label', 'equalto', server_label) | list | first).main_ip
@@ -89,50 +86,12 @@
           [vultr_servers]
           {{ (results.vultr_instance_info | selectattr('label', 'equalto', server_label) | list | first).main_ip }}
         dest: "inventory/hosts"
-        mode: '0644'
-    
+        mode: "0644"
+
     # Write instance id to vars file
     - name: Write instance id to vars file
       ansible.builtin.copy:
         content: |
           instance_id: "{{ (results.vultr_instance_info | selectattr('label', 'equalto', server_label) | list | first).id }}"
         dest: "vars/instance_id.yml"
-        mode: '0644'
-
-# # Play 2: Configure the new server
-# - name: Configure New Vultr Ubuntu Server
-#   hosts: vultr_servers
-#   gather_facts: false 
-  
-#   tasks:
-  # - name: Create an admin user
-    #   ansible.builtin.user:
-    #     name: "{{ admin_user }}"
-    #     state: present
-    #     shell: /bin/bash
-    #     groups: sudo # Add user to sudo group
-    #     append: yes
-    #     create_home: yes
-
-    # - name: Set up authorized keys for the admin user
-    #   ansible.posix.authorized_key:
-    #     user: "{{ admin_user }}"
-    #     state: present
-    #     key: "{{ lookup('file', ssh_private_key_file + '.pub') }}" # Assumes pub key is next to private key
-#     - name: Update APT package cache
-#       ansible.builtin.apt:
-#         update_cache: yes
-
-#     - name: Upgrade all APT packages
-#       ansible.builtin.apt:
-#         upgrade: dist # Upgrade everything, handling dependencies
-
-#     - name: Install common packages (optional)
-#       ansible.builtin.apt:
-#         name:
-#           - vim
-#           - git
-#           - curl
-#           - ufw # Uncomplicated Firewall
-#           - fail2ban
-#         state: present
+        mode: "0644"

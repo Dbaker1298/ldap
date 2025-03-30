@@ -1,0 +1,47 @@
+# # Play 2: Configure the new server
+- name: Configure New Vultr Ubuntu Server
+  hosts: vultr_servers
+  remote_user: root
+  gather_facts: false
+
+  vars:
+    admin_user: "david" # Name of the admin user to create
+    
+    # --- SSH Configuration for Ansible ---
+    # Path to the *private* key corresponding to the public key added to Vultr
+    # ** SECURITY WARNING: Secure this path if needed (e.g., Vault) **
+    ssh_private_key_file: "~/.ssh/id_ed25519" # Adjust path as needed
+  
+  tasks:
+  - name: Create an admin user
+    ansible.builtin.user:
+      name: "{{ admin_user }}"
+      state: present
+      shell: /bin/bash
+      groups: sudo # Add user to sudo group
+      append: yes
+      create_home: yes
+
+  - name: Set up authorized keys for the admin user
+    ansible.posix.authorized_key:
+      user: "{{ admin_user }}"
+      state: present
+      key: "{{ lookup('file', ssh_private_key_file + '.pub') }}" # Assumes pub key is next to private key
+
+  - name: Update APT package cache
+    ansible.builtin.apt:
+      update_cache: yes
+
+  - name: Upgrade all APT packages
+    ansible.builtin.apt:
+      upgrade: dist # Upgrade everything, handling dependencies
+
+  - name: Install common packages (optional)
+    ansible.builtin.apt:
+     name:
+       - vim
+       - git
+       - curl
+       - ufw # Uncomplicated Firewall
+       - fail2ban
+     state: present
