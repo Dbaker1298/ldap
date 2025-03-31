@@ -10,7 +10,6 @@
 
   # Optional: Define variables specific to this play/host group
   vars:
-    admin_user: "david"
     # --- Basic LDAP Configuration ---
     ldap_domain_components: ['still-learning', 'tech'] # e.g., for still-learning.tech
     ldap_organization: "Still Learning LLC"            # The organization name
@@ -24,11 +23,20 @@
     # If *not* using Vault (NOT RECOMMENDED for production), you could use plain text:
     # ldap_root_password_plain: "YourSecretPasswordGoesHere" # Less secure alternative
 
-    # Path for TLS Certificates (adjust if needed)
-    ldap_tls_certs_path: "/etc/ldap/ssl" # Changed from default /etc/ssl/certs to avoid conflicts
-    ldap_tls_key_file: "{{ ldap_tls_certs_path }}/ldap.key"
-    ldap_tls_cert_file: "{{ ldap_tls_certs_path }}/ldap.crt"
-    ldap_tls_cacert_file: "{{ ldap_tls_cert_file }}" # Using self-signed, so cert is CA cert
+    # --- TLS Configuration ---
+    # Location where the renewal hook will copy LE certs for slapd to use
+    ldap_tls_certs_path_final: "/etc/ldap/ssl"
+    # These filenames match what the hook script will create
+    ldap_tls_key_file_final: "{{ ldap_tls_certs_path_final }}/privkey.pem"
+    ldap_tls_cert_file_final: "{{ ldap_tls_certs_path_final }}/fullchain.pem"
+    ldap_tls_cacert_file_final: "{{ ldap_tls_certs_path_final }}/chain.pem" # Optional, often fullchain is sufficient
+
+    # Let's Encrypt paths (standard locations)
+    letsencrypt_live_path: "/etc/letsencrypt/live/{{ ldap_public_domain }}"
+    letsencrypt_cert: "{{ letsencrypt_live_path }}/cert.pem"
+    letsencrypt_chain: "{{ letsencrypt_live_path }}/chain.pem"
+    letsencrypt_fullchain: "{{ letsencrypt_live_path }}/fullchain.pem"
+    letsencrypt_privkey: "{{ letsencrypt_live_path }}/privkey.pem"
 
     # Debconf selections for slapd package
     slapd_debconf_selections:

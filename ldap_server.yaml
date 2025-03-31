@@ -1,0 +1,138 @@
+- name: Configure New Vultr Ubuntu OpenLDAP Server
+  hosts: vultr_servers # Target the dynamic group created above
+  become: true         # Most config tasks need sudo/root
+  gather_facts: true   # Gather facts from the remote server
+
+  vars_files:
+    - vars/ldap_secrets.yaml # Load sensitive variables from a separate file
+
+  vars:
+    ldap_domain: "ldapserver.still-learning.tech"
+    certbot_email: "david@still-learning.tech"
+  tasks:
+    - name: Set the hostname to ldapserver.still-learning.tech
+      ansible.builtin.hostname:
+        name: ldapserver.still-learning.tech
+
+    - name: Update /etc/hosts with the new hostname
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: "^127\\.0\\.1\\.1\\s"
+        line: "127.0.1.1 ldapserver.still-learning.tech ldapserver"
+        state: present
+
+    - name: Install OpenLDAP and required packages
+      apt:
+        name:
+          - slapd               # OpenLDAP server
+          - ldap-utils          # LDAP client tools
+          - certbot             # Certbot for Let's Encrypt
+          - ufw                 # UFW firewall
+          - python3-pip         # Python package installer
+          - python3-ldap        # Python LDAP bindings
+          - libldap2-dev        # LDAP development libraries
+          - libsasl2-dev        # SASL development libraries
+          - tox
+          - lcov
+          - valgrind
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600 # Cache valid for 1 hour
+
+    - name: Allow LDAP (port 389) and LDAPS (port 636) traffic
+      ansible.builtin.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - 389   # LDAP
+        - 636   # LDAPS
+        - 80    # HTTP (for certbot)
+        - 443   # HTTPS (for certbot)
+
+    - name: Enable UFW if not already enabled
+      ansible.builtin.ufw:
+        state: enabled
+        policy: allow
+        
+    - name: Obtain Let's Encrypt SSL certificate (standalone)
+      command: >
+        certbot certonly --standalone --non-interactive --agree-tos 
+        -m {{ certbot_email }} -d {{ ldap_domain }}
+      args:
+        creates: "/etc/letsencrypt/live/{{ ldap_domain }}/fullchain.pem"
+
+    - name: Create directory for OpenLDAP SSL certs
+      file:
+        path: /etc/ldap/ssl
+        state: directory
+        owner: root
+        group: openldap
+        mode: '0750'
+
+    - name: Deploy certificate file for OpenLDAP
+      copy:
+        remote_src: true
+        src: "/etc/letsencrypt/live/{{ ldap_domain }}/fullchain.pem"
+        dest: /etc/ldap/ssl/ldap.crt
+        owner: root
+        group: openldap
+        mode: '0640'
+
+    - name: Deploy private key file for OpenLDAP
+      copy:
+        remote_src: true
+        src: "/etc/letsencrypt/live/{{ ldap_domain }}/privkey.pem"
+        dest: /etc/ldap/ssl/ldap.key
+        owner: root
+        group: openldap
+        mode: '0640'
+
+    - name: Create LDIF to configure LDAP TLS
+      template:
+        src: ldap_tls.ldif.j2
+        dest: /etc/ldap/tls_config.ldif
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Set LDAP admin password
+      community.general.ldap_attrs:
+        dn: "olcDatabase={1}mdb,cn=config"
+        attributes:
+          olcRootPW: "{{ ldap_admin_password }}"
+        state: exact
+      notify: Restart slapd
+
+    - name: Apply OpenLDAP TLS configuration (ldapi)
+      command: ldapmodify -Y EXTERNAL -H ldapi:/// -f /etc/ldap/tls_config.ldif
+      notify: Restart slapd
+
+    - name: Enable LDAPS listener in slapd config
+      lineinfile:
+        path: /etc/default/slapd
+        regexp: '^SLAPD_SERVICES='
+        line: 'SLAPD_SERVICES="ldap:/// ldapi:/// ldaps:///"'
+      notify: Restart slapd
+
+    - name: Adjust AppArmor profile for OpenLDAP cert access
+      blockinfile:
+        path: /etc/apparmor.d/local/usr.sbin.slapd
+        block: |
+          # Allow OpenLDAP to read SSL cert and key
+          /etc/ldap/ssl/ r,
+          /etc/ldap/ssl/** r,
+      notify: Reload apparmor
+
+  handlers:
+    - name: Restart slapd
+      service:
+        name: slapd
+        state: restarted
+        enabled: yes
+
+    - name: Reload apparmor
+      service:
+        name: apparmor
+        state: reloaded
+        enabled: yes
